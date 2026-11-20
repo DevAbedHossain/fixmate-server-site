@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from "cors";
 import 'dotenv/config';
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 
 const app = express();
 const port = process.env.PORT;
@@ -27,6 +27,17 @@ const serviceCollection = db.collection("services");
 app.get('/', (req, res) => {
     res.send('Hello World!');
 });
+
+app.post("/service", async (req, res) => {
+    const data = req.body;
+    const result = await serviceCollection.insertOne(data);
+    res.send(result);
+})
+
+app.get("/services", async (req, res) => {
+    const result = await serviceCollection.find().toArray();
+    res.send(result);
+})
 
 app.listen(port, () => {
     console.log(`Example app listening on port ${port}`);
