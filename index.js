@@ -23,9 +23,25 @@ export async function connectToMongoDB() {
 const mongoDBClient = await connectToMongoDB();
 const db = mongoDBClient.db("fixmate");
 const serviceCollection = db.collection("services");
+const userCollection = db.collection("user");
 
 app.get('/', (req, res) => {
     res.send('Hello World!');
+});
+
+app.patch("/user/:id", async (req, res) => {
+    const { id } = req.params;
+    const body = req.body;
+
+    const result = await userCollection.updateOne(
+        { _id: new ObjectId(id) },
+        {
+            $set: {
+                ...body
+            }
+        }
+    );
+    res.send(result);
 });
 
 app.post("/service", async (req, res) => {
@@ -36,6 +52,20 @@ app.post("/service", async (req, res) => {
 
 app.get("/services", async (req, res) => {
     const result = await serviceCollection.find().toArray();
+    res.send(result);
+})
+
+app.patch("/service", async (req, res) => {
+    const { id } = req.params;
+    const UpdateData = req.body;
+    const result = await serviceCollection.updateOne(
+        { _id: new ObjectId(id) },
+        {
+            $set: {
+                ...UpdateData
+            }
+        }
+    )
     res.send(result);
 })
 
