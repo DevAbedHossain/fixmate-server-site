@@ -55,7 +55,19 @@ app.get("/services", async (req, res) => {
     res.send(result);
 })
 
-app.patch("/service", async (req, res) => {
+app.get("/service-limit", async (req, res) => {
+
+    const query = {
+        approvalStatus: "approved",
+        isAvailable: true
+    }
+
+    const result = await serviceCollection.find(query).sort({ createdAt: -1 }).limit(6).toArray();
+    res.send(result);
+
+})
+
+app.patch("/service/:id", async (req, res) => {
     const { id } = req.params;
     const UpdateData = req.body;
     const result = await serviceCollection.updateOne(
@@ -66,6 +78,12 @@ app.patch("/service", async (req, res) => {
             }
         }
     )
+    res.send(result);
+})
+
+app.delete("/service/:id", async (req, res) => {
+    const { id } = req.params;
+    const result = await serviceCollection.deleteOne({ _id: new ObjectId(id) });
     res.send(result);
 })
 
