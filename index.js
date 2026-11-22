@@ -45,6 +45,13 @@ const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const ACTIVE_STATUSES = ["requested", "accepted", "in-progress"];
 
+// Allowed job status moves for the technician (Challenge 3)
+const TECHNICIAN_NEXT_STATUS = {
+    requested: ["accepted", "rejected"],
+    accepted: ["in-progress"],
+    "in-progress": ["completed"],
+};
+
 /* ------------------------------------------------------------------ */
 /* Middlewares (Challenge 2)                                           */
 /* ------------------------------------------------------------------ */
@@ -381,6 +388,42 @@ app.patch("/booking-request/:id/cancel", verifyToken, verifyCustomer, async (req
     const result = await bookingCollection.updateOne(
         { _id: booking._id, status: "requested" },
         { $set: { status: "cancelled", updatedAt: new Date() } }
+    );
+    res.send(result);
+})
+
+// Technician moves the job one step forward (Challenge 3)
+app.patch("/booking-request/:id/status", verifyToken, verifyTechnician, async (req, res) => {
+    const { id } = req.params;
+    const { status, finalAmount } = req.body;
+
+    if (!isValidId(id)) {
+        return res.status(404).send({ message: "Booking not found" });
+    }
+
+    const booking = await bookingCollection.findOne({ _id: new ObjectId(id) });
+    if (!booking) {
+        return res.status(404).send({ message: "Booking not found" });
+    }
+    if (booking.technicianEmail !== req.user.email) {
+        return res.status(403).send({ message: "Forbidden access" });
+    }
+    if (!TECHNICIAN_NEXT_STATUS[booking.status]?.includes(status)) {
+        return res.status(400).send({ message: `Cannot change status from "${booking.status}" to "${status}"` });
+    }
+
+    const update = { status, updatedAt: new Date() };
+    if (status === "completed") {
+        if (!(Number(finalAmount) > 0)) {
+            return res.status(400).send({ message: "Final amount must be a number greater than 0" });
+        }
+        update.finalAmount = Number(finalAmount);
+    }
+
+    // Matching the old status too prevents two parallel updates from both succeeding
+    const result = await bookingCollection.updateOne(
+        { _id: booking._id, status: booking.status },
+        { $set: update }
     );
     res.send(result);
 })
