@@ -33,7 +33,7 @@ const mongoDBClient = await connectToMongoDB();
 const db = mongoDBClient.db("fixmate");
 const serviceCollection = db.collection("services");
 const userCollection = db.collection("user");
-const bookingRequestCollection = db.collection("bookingRequests");
+const bookingCollection = db.collection("bookings");
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -42,6 +42,8 @@ const bookingRequestCollection = db.collection("bookingRequests");
 const isValidId = (id) => ObjectId.isValid(id) && String(new ObjectId(id)) === id;
 
 const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const ACTIVE_STATUSES = ["requested", "accepted", "in-progress"];
 
 /* ------------------------------------------------------------------ */
 /* Middlewares (Challenge 2)                                           */
@@ -268,14 +270,118 @@ app.delete("/service/:id", verifyToken, verifyTechnician, async (req, res) => {
     res.send(result);
 })
 
-app.post("/booking-request", async (req, res) => {
-    const data = req.body;
-    const result = await bookingRequestCollection.insertOne(data);
+/* ---------- Bookings (repair requests) ---------- */
+
+// Customer sends a repair request
+app.post("/booking-request", verifyToken, verifyCustomer, async (req, res) => {
+    const { serviceId, customerPhone, address, preferredDate, problemDescription } = req.body;
+
+    if (!isValidId(serviceId)) {
+        return res.status(404).send({ message: "Service not found" });
+    }
+
+    const service = await serviceCollection.findOne({ _id: new ObjectId(serviceId) });
+    if (!service || service.approvalStatus !== "approved" || !service.isAvailable) {
+        return res.status(404).send({ message: "Service not found" });
+    }
+    if (service.technicianEmail === req.user.email) {
+        return res.status(403).send({ message: "You cannot request your own service" });
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const date = new Date(preferredDate);
+
+    if (!customerPhone || !address) {
+        return res.status(400).send({ message: "Phone and address are required" });
+    }
+    if (Number.isNaN(date.getTime()) || date < today) {
+        return res.status(400).send({ message: "Preferred date must be today or a future date" });
+    }
+    if (!problemDescription || problemDescription.trim().length < 20) {
+        return res.status(400).send({ message: "Problem description must be at least 20 characters" });
+    }
+
+    // One active request per customer per service
+    const activeRequest = await bookingCollection.findOne({
+        serviceId,
+        customerEmail: req.user.email,
+        status: { $in: ACTIVE_STATUSES },
+    });
+    if (activeRequest) {
+        return res.status(409).send({ message: "You already have an active request for this service" });
+    }
+
+    const booking = {
+        serviceId,
+        serviceTitle: service.title,
+        serviceImage: service.image,
+        category: service.category,
+        basePrice: Number(service.basePrice),
+        technicianName: service.technicianName,
+        technicianEmail: service.technicianEmail,
+        customerName: req.user.name,
+        customerEmail: req.user.email,
+        customerPhone,
+        address,
+        preferredDate: date,
+        problemDescription: problemDescription.trim(),
+        status: "requested",
+        finalAmount: Number(service.basePrice),
+        paymentStatus: "unpaid",
+        createdAt: new Date(),
+    };
+
+    const result = await bookingCollection.insertOne(booking);
     res.send(result);
 })
 
-app.get("/booking-request", async (req, res) => {
-    const result = await bookingRequestCollection.find().toArray();
+// Customer: own bookings
+app.get("/booking-request/my", verifyToken, verifyCustomer, async (req, res) => {
+    const result = await bookingCollection
+        .find({ customerEmail: req.user.email })
+        .sort({ createdAt: -1 })
+        .toArray();
+    res.send(result);
+})
+
+// Technician: jobs for own services
+app.get("/booking-request/technician", verifyToken, verifyTechnician, async (req, res) => {
+    const result = await bookingCollection
+        .find({ technicianEmail: req.user.email })
+        .sort({ createdAt: -1 })
+        .toArray();
+    res.send(result);
+})
+
+// Admin: every booking
+app.get("/booking-request", verifyToken, verifyAdmin, async (req, res) => {
+    const result = await bookingCollection.find().sort({ createdAt: -1 }).toArray();
+    res.send(result);
+})
+
+// Customer cancels — only while still "requested"
+app.patch("/booking-request/:id/cancel", verifyToken, verifyCustomer, async (req, res) => {
+    const { id } = req.params;
+    if (!isValidId(id)) {
+        return res.status(404).send({ message: "Booking not found" });
+    }
+
+    const booking = await bookingCollection.findOne({ _id: new ObjectId(id) });
+    if (!booking) {
+        return res.status(404).send({ message: "Booking not found" });
+    }
+    if (booking.customerEmail !== req.user.email) {
+        return res.status(403).send({ message: "Forbidden access" });
+    }
+    if (booking.status !== "requested") {
+        return res.status(400).send({ message: "Only requested bookings can be cancelled" });
+    }
+
+    const result = await bookingCollection.updateOne(
+        { _id: booking._id, status: "requested" },
+        { $set: { status: "cancelled", updatedAt: new Date() } }
+    );
     res.send(result);
 })
 
