@@ -573,6 +573,59 @@ app.get("/payments/my", verifyToken, verifyCustomer, async (req, res) => {
     res.send(result);
 })
 
+/* ---------- Admin ---------- */
+
+app.get("/admin/users", verifyToken, verifyAdmin, async (req, res) => {
+    const result = await userCollection
+        .find({}, { projection: { name: 1, email: 1, image: 1, role: 1, createdAt: 1 } })
+        .sort({ createdAt: -1 })
+        .toArray();
+    res.send(result);
+})
+
+app.patch("/admin/users/:id/role", verifyToken, verifyAdmin, async (req, res) => {
+    const { id } = req.params;
+    const { role } = req.body;
+
+    if (!isValidId(id)) {
+        return res.status(404).send({ message: "User not found" });
+    }
+    if (!["customer", "technician", "admin"].includes(role)) {
+        return res.status(400).send({ message: "Invalid role" });
+    }
+    if (String(req.user._id) === id) {
+        return res.status(400).send({ message: "You cannot change your own role" });
+    }
+
+    const result = await userCollection.updateOne({ _id: new ObjectId(id) }, { $set: { role } });
+    res.send(result);
+})
+
+app.get("/admin/services", verifyToken, verifyAdmin, async (req, res) => {
+    const result = await serviceCollection.find().sort({ createdAt: -1 }).toArray();
+    res.send(result);
+})
+
+app.patch("/admin/services/:id/approval", verifyToken, verifyAdmin, async (req, res) => {
+    const { id } = req.params;
+    const { approvalStatus } = req.body;
+
+    if (!isValidId(id)) {
+        return res.status(404).send({ message: "Service not found" });
+    }
+    if (!["approved", "rejected"].includes(approvalStatus)) {
+        return res.status(400).send({ message: "Invalid approval status" });
+    }
+
+    const result = await serviceCollection.updateOne({ _id: new ObjectId(id) }, { $set: { approvalStatus } });
+    res.send(result);
+})
+
+app.get("/admin/payments", verifyToken, verifyAdmin, async (req, res) => {
+    const result = await paymentCollection.find().sort({ paidAt: -1 }).toArray();
+    res.send(result);
+})
+
 app.listen(port, () => {
     console.log(`Example app listening on port ${port}`);
 });
