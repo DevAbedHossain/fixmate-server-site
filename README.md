@@ -12,14 +12,16 @@ Express + MongoDB API for **FixMate**, a repair service platform where customers
 - **Server-enforced job pipeline** — `requested → accepted | rejected`, `accepted → in-progress`, `in-progress → completed` (final amount > 0). Anything else is rejected.
 - **Business rules** — one active request per customer per service, preferred date today or later, technicians/admins cannot request, editing a service sends it back to `pending`.
 - **Stripe payments** — Checkout sessions are created from the booking in the database (never from a client amount). Payments are saved from the success-page verification and/or the webhook, with a unique `stripeSessionId` index so the same payment is never stored twice.
-- **Server-side search, filter & sort** for public services.
+- **Server-side search, filter, sort & pagination** for public services (`skip`/`limit`, returns `{ services, total, page, totalPages }`).
+- **Job timeline** — every status change is pushed to `statusHistory` with its time.
+- **Ratings & reviews** — customers rate a paid job once (1–5); the service keeps an up-to-date `ratingAvg` and `ratingCount`.
 
 ## API
 
 | Method & route | Access |
 | --- | --- |
-| `GET /services?search=&category=&mode=&sort=` · `GET /service/:id` · `GET /service-limit` · `GET /user/:id` | Public |
-| `POST /booking-request` · `GET /booking-request/my` · `PATCH /booking-request/:id/cancel` · `POST /create-payment-intent` · `GET /payment/verify` · `GET /payments/my` | Customer |
+| `GET /services?search=&category=&mode=&sort=&page=&limit=` · `GET /service/:id` · `GET /service/:id/reviews` · `GET /service-limit` · `GET /user/:id` | Public |
+| `POST /booking-request` · `GET /booking-request/my` · `PATCH /booking-request/:id/cancel` · `PATCH /booking-request/:id/review` · `POST /create-payment-intent` · `GET /payment/verify` · `GET /payments/my` | Customer |
 | `POST /service` · `PATCH /service/:id` · `DELETE /service/:id` · `GET /services/technician` · `GET /booking-request/technician` · `PATCH /booking-request/:id/status` | Technician |
 | `GET /admin/users` · `PATCH /admin/users/:id/role` · `GET /admin/services` · `PATCH /admin/services/:id/approval` · `GET /booking-request` · `GET /admin/payments` | Admin |
 | `PATCH /user/:id` (own profile only) | Any logged-in user |
