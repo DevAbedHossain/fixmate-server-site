@@ -109,9 +109,13 @@ async function savePayment(session) {
         if (err.code !== 11000) throw err;
     }
 
+    // Only the first save marks it paid and adds the "paid" step to the timeline
     await bookingCollection.updateOne(
-        { _id: booking._id },
-        { $set: { paymentStatus: "paid", paidAt: payment.paidAt } }
+        { _id: booking._id, paymentStatus: { $ne: "paid" } },
+        {
+            $set: { paymentStatus: "paid", paidAt: payment.paidAt },
+            $push: { statusHistory: { status: "paid", changedAt: payment.paidAt } },
+        }
     );
 
     return paymentCollection.findOne({ stripeSessionId: session.id });
@@ -401,6 +405,8 @@ app.post("/booking-request", verifyToken, verifyCustomer, async (req, res) => {
         status: "requested",
         finalAmount: Number(service.basePrice),
         paymentStatus: "unpaid",
+        // Job timeline: every status change is recorded with its time
+        statusHistory: [{ status: "requested", changedAt: new Date() }],
         createdAt: new Date(),
     };
 
@@ -452,7 +458,10 @@ app.patch("/booking-request/:id/cancel", verifyToken, verifyCustomer, async (req
 
     const result = await bookingCollection.updateOne(
         { _id: booking._id, status: "requested" },
-        { $set: { status: "cancelled", updatedAt: new Date() } }
+        {
+            $set: { status: "cancelled", updatedAt: new Date() },
+            $push: { statusHistory: { status: "cancelled", changedAt: new Date() } },
+        }
     );
     res.send(result);
 })
@@ -488,7 +497,7 @@ app.patch("/booking-request/:id/status", verifyToken, verifyTechnician, async (r
     // Matching the old status too prevents two parallel updates from both succeeding
     const result = await bookingCollection.updateOne(
         { _id: booking._id, status: booking.status },
-        { $set: update }
+        { $set: update, $push: { statusHistory: { status, changedAt: update.updatedAt } } }
     );
     res.send(result);
 })
