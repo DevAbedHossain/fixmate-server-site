@@ -16,6 +16,25 @@ const CLIENT_URL = clientOrigins[0];
 
 app.use(cors({ origin: clientOrigins }));
 
+// Stripe webhook needs the raw body, so it is registered before express.json()
+app.post("/stripe/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+    if (!process.env.STRIPE_WEBHOOK_SECRET) {
+        return res.status(400).send({ message: "Webhook secret not configured" });
+    }
+
+    let event;
+    try {
+        event = stripe.webhooks.constructEvent(req.body, req.headers["stripe-signature"], process.env.STRIPE_WEBHOOK_SECRET);
+    } catch (err) {
+        return res.status(400).send({ message: `Webhook error: ${err.message}` });
+    }
+
+    if (event.type === "checkout.session.completed" && event.data.object.payment_status === "paid") {
+        await savePayment(event.data.object);
+    }
+    res.send({ received: true });
+});
+
 app.use(express.json());
 
 const client = new MongoClient(process.env.BETTER_AUTH_MONGO_DB_URL);
@@ -34,6 +53,10 @@ const db = mongoDBClient.db("fixmate");
 const serviceCollection = db.collection("services");
 const userCollection = db.collection("user");
 const bookingCollection = db.collection("bookings");
+const paymentCollection = db.collection("payments");
+
+// The same Stripe session can never be saved twice (success page + webhook + retries)
+await paymentCollection.createIndex({ stripeSessionId: 1 }, { unique: true });
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -51,6 +74,48 @@ const TECHNICIAN_NEXT_STATUS = {
     accepted: ["in-progress"],
     "in-progress": ["completed"],
 };
+
+/** Insert the payment once and mark the booking paid. Safe to call many times. */
+async function savePayment(session) {
+    const bookingId = session.metadata?.bookingId;
+    if (!bookingId || !isValidId(bookingId)) return null;
+
+    const booking = await bookingCollection.findOne({ _id: new ObjectId(bookingId) });
+    if (!booking) return null;
+
+    const payment = {
+        bookingId,
+        serviceTitle: booking.serviceTitle,
+        customerName: booking.customerName,
+        customerEmail: booking.customerEmail,
+        technicianName: booking.technicianName,
+        technicianEmail: booking.technicianEmail,
+        amount: session.amount_total / 100,
+        currency: session.currency,
+        transactionId: typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id,
+        stripeSessionId: session.id,
+        paymentStatus: "paid",
+        paidAt: new Date(),
+    };
+
+    try {
+        await paymentCollection.updateOne(
+            { stripeSessionId: session.id },
+            { $setOnInsert: payment },
+            { upsert: true }
+        );
+    } catch (err) {
+        // Duplicate key from a parallel request: the payment already exists
+        if (err.code !== 11000) throw err;
+    }
+
+    await bookingCollection.updateOne(
+        { _id: booking._id },
+        { $set: { paymentStatus: "paid", paidAt: payment.paidAt } }
+    );
+
+    return paymentCollection.findOne({ stripeSessionId: session.id });
+}
 
 /* ------------------------------------------------------------------ */
 /* Middlewares (Challenge 2)                                           */
@@ -425,6 +490,86 @@ app.patch("/booking-request/:id/status", verifyToken, verifyTechnician, async (r
         { _id: booking._id, status: booking.status },
         { $set: update }
     );
+    res.send(result);
+})
+
+/* ---------- Payments ---------- */
+
+// Customer starts Stripe Checkout for a completed + unpaid booking
+app.post("/create-payment-intent", verifyToken, verifyCustomer, async (req, res) => {
+    const { bookingId } = req.body;
+    if (!isValidId(bookingId)) {
+        return res.status(404).send({ message: "Booking not found" });
+    }
+
+    // Amount always comes from the database, never from the client
+    const booking = await bookingCollection.findOne({ _id: new ObjectId(bookingId) });
+    if (!booking) {
+        return res.status(404).send({ message: "Booking not found" });
+    }
+    if (booking.customerEmail !== req.user.email) {
+        return res.status(403).send({ message: "Forbidden access" });
+    }
+    if (booking.status !== "completed" || booking.paymentStatus === "paid") {
+        return res.status(400).send({ message: "This booking cannot be paid" });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+        success_url: `${CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${CLIENT_URL}/payment/cancel`,
+        mode: 'payment',
+        customer_email: booking.customerEmail,
+        line_items: [
+            {
+                price_data: {
+                    currency: 'usd',
+                    product_data: {
+                        name: booking.serviceTitle,
+                    },
+                    unit_amount: Math.round(Number(booking.finalAmount) * 100),
+                },
+                quantity: 1,
+            }
+        ],
+        metadata: {
+            bookingId: String(booking._id),
+            customerEmail: booking.customerEmail,
+        }
+    });
+
+    res.send({ success: true, url: session.url, sessionId: session.id });
+})
+
+// Success page verification — saves the payment once
+app.get("/payment/verify", verifyToken, verifyCustomer, async (req, res) => {
+    const { session_id } = req.query;
+    if (!session_id) {
+        return res.status(400).send({ message: "session_id is required" });
+    }
+
+    let session;
+    try {
+        session = await stripe.checkout.sessions.retrieve(session_id);
+    } catch {
+        return res.status(404).send({ message: "Payment session not found" });
+    }
+
+    if (session.metadata?.customerEmail !== req.user.email) {
+        return res.status(403).send({ message: "Forbidden access" });
+    }
+    if (session.payment_status !== "paid") {
+        return res.status(400).send({ message: "Payment not completed" });
+    }
+
+    const payment = await savePayment(session);
+    res.send(payment);
+})
+
+app.get("/payments/my", verifyToken, verifyCustomer, async (req, res) => {
+    const result = await paymentCollection
+        .find({ customerEmail: req.user.email })
+        .sort({ paidAt: -1 })
+        .toArray();
     res.send(result);
 })
 
