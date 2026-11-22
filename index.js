@@ -229,7 +229,32 @@ app.get("/services", async (req, res) => {
             sort === "price-desc" ? { basePrice: -1 } :
                 { createdAt: -1 };
 
-    const result = await serviceCollection.find(query).sort(sortBy).toArray();
+    // Server-side pagination with skip/limit, together with search, filter and sort
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 8, 1), 48);
+    const total = await serviceCollection.countDocuments(query);
+    const totalPages = Math.max(Math.ceil(total / limit), 1);
+    const page = Math.min(Math.max(parseInt(req.query.page) || 1, 1), totalPages);
+
+    const services = await serviceCollection
+        .find(query)
+        .sort({ ...sortBy, _id: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .toArray();
+
+    res.send({ services, total, page, totalPages });
+})
+
+// Public reviews for a service (newest first)
+app.get("/service/:id/reviews", async (req, res) => {
+    const result = await bookingCollection
+        .find(
+            { serviceId: req.params.id, rating: { $exists: true } },
+            { projection: { customerName: 1, rating: 1, review: 1, reviewedAt: 1 } }
+        )
+        .sort({ reviewedAt: -1 })
+        .limit(10)
+        .toArray();
     res.send(result);
 })
 
@@ -499,6 +524,56 @@ app.patch("/booking-request/:id/status", verifyToken, verifyTechnician, async (r
         { _id: booking._id, status: booking.status },
         { $set: update, $push: { statusHistory: { status, changedAt: update.updatedAt } } }
     );
+    res.send(result);
+})
+
+// Customer rates a paid job once (1–5 stars + short review)
+app.patch("/booking-request/:id/review", verifyToken, verifyCustomer, async (req, res) => {
+    const { id } = req.params;
+    const rating = Number(req.body.rating);
+    const review = String(req.body.review ?? "").trim();
+
+    if (!isValidId(id)) {
+        return res.status(404).send({ message: "Booking not found" });
+    }
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+        return res.status(400).send({ message: "Rating must be a whole number from 1 to 5" });
+    }
+    if (review.length > 500) {
+        return res.status(400).send({ message: "Review must be 500 characters or less" });
+    }
+
+    const booking = await bookingCollection.findOne({ _id: new ObjectId(id) });
+    if (!booking) {
+        return res.status(404).send({ message: "Booking not found" });
+    }
+    if (booking.customerEmail !== req.user.email) {
+        return res.status(403).send({ message: "Forbidden access" });
+    }
+    if (booking.paymentStatus !== "paid") {
+        return res.status(400).send({ message: "You can review a job after paying for it" });
+    }
+
+    const result = await bookingCollection.updateOne(
+        { _id: booking._id, rating: { $exists: false } },
+        { $set: { rating, review, reviewedAt: new Date() } }
+    );
+    if (result.modifiedCount === 0) {
+        return res.status(400).send({ message: "You have already reviewed this job" });
+    }
+
+    // Keep the service's average rating up to date for cards and the details page
+    const [stats] = await bookingCollection.aggregate([
+        { $match: { serviceId: booking.serviceId, rating: { $exists: true } } },
+        { $group: { _id: null, avg: { $avg: "$rating" }, count: { $sum: 1 } } },
+    ]).toArray();
+    if (isValidId(booking.serviceId) && stats) {
+        await serviceCollection.updateOne(
+            { _id: new ObjectId(booking.serviceId) },
+            { $set: { ratingAvg: Math.round(stats.avg * 10) / 10, ratingCount: stats.count } }
+        );
+    }
+
     res.send(result);
 })
 
