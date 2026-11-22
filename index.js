@@ -142,7 +142,9 @@ const verifyToken = async (req, res, next) => {
         }
         req.user = user;
         next();
-    } catch {
+    } catch (err) {
+        // Shows up in the Vercel function logs (e.g. JWKS unreachable because CLIENT_URL is wrong)
+        console.error(`verifyToken failed (JWKS: ${CLIENT_URL}/api/auth/jwks):`, err.code || err.message);
         return res.status(401).send({ message: "Unauthorized access" });
     }
 };
