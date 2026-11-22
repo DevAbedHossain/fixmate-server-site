@@ -36,15 +36,15 @@ app.post("/stripe/webhook", express.raw({ type: "application/json" }), async (re
 
 app.use(express.json());
 
+if (!process.env.BETTER_AUTH_MONGO_DB_URL) {
+    throw new Error("BETTER_AUTH_MONGO_DB_URL is not set. Add it to .env locally or to the Vercel project's Environment Variables.");
+}
+
 const client = new MongoClient(process.env.BETTER_AUTH_MONGO_DB_URL);
 export async function connectToMongoDB() {
-    try {
-        await client.connect();
-        console.log("You successfully connected to MongoDB!");
-        return client;
-    } catch (err) {
-        console.dir(err);
-    }
+    await client.connect();
+    console.log("You successfully connected to MongoDB!");
+    return client;
 }
 
 const mongoDBClient = await connectToMongoDB();
@@ -709,6 +709,12 @@ app.get("/admin/payments", verifyToken, verifyAdmin, async (req, res) => {
     res.send(result);
 })
 
-app.listen(port, () => {
-    console.log(`Example app listening on port ${port}`);
-});
+// On Vercel the app runs as a serverless function, so it must be exported
+// instead of calling listen(). Locally we still start a normal server.
+if (!process.env.VERCEL) {
+    app.listen(port || 5000, () => {
+        console.log(`Example app listening on port ${port || 5000}`);
+    });
+}
+
+export default app;
