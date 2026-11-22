@@ -10,11 +10,10 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
 const app = express();
 const port = process.env.PORT;
 
-// CLIENT_URL may hold several origins separated by commas (local + production)
-const clientOrigins = (process.env.CLIENT_URL ?? "").split(",").map((url) => url.trim()).filter(Boolean);
-const CLIENT_URL = clientOrigins[0];
+// Frontend URL — used for the BetterAuth JWKS (token check) and the Stripe redirect pages
+const CLIENT_URL = (process.env.CLIENT_URL ?? "").trim().replace(/\/$/, "");
 
-app.use(cors({ origin: clientOrigins }));
+app.use(cors());
 
 // Stripe webhook needs the raw body, so it is registered before express.json()
 app.post("/stripe/webhook", express.raw({ type: "application/json" }), async (req, res) => {
